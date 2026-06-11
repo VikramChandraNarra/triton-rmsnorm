@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# Triton autotune cache
+.triton/
+
+# Benchmark artifacts are regenerated; keep results/ tracked but ignore stray
+# scratch files. (Comment the next line out if you want to commit raw runs.)
+bench/results/*.tmp
+*.log

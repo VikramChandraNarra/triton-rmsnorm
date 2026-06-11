@@ -1,0 +1,10 @@
+# Core. Triton ships with the CUDA build of PyTorch; pinning torch>=2.3 gives a
+# Triton recent enough for tl.math.rsqrt and the autotune API used here.
+torch>=2.3.0
+triton>=2.3.0
+
+# Test + benchmark tooling.
+pytest>=7.0
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7
