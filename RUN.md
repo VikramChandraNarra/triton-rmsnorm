@@ -1,5 +1,9 @@
 # Running on a rented GPU (Lambda / RunPod / etc.)
 
+> **On Trillium (SciNet H100 cluster)? Use [`TRILLIUM.md`](TRILLIUM.md) instead** —
+> it handles the no-internet compute nodes, read-only `$HOME`, SLURM scripts, and
+> the H100's 3.35 TB/s bandwidth denominator. This file is for generic cloud GPUs.
+
 This kernel cannot be exercised without an NVIDIA GPU. These are the exact
 commands to validate **correctness** on a fresh single-A100 or single-H100 box.
 (The benchmark + plots are a separate step, added only after these tests pass.)
