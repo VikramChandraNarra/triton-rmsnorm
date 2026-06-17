@@ -27,9 +27,9 @@ RMSNorm takes a row $x \in \mathbb{R}^{N}$, divides it by its root-mean-square,
 and scales by a learned gain $w$:
 
 $$
-\operatorname{rms}(x) = \sqrt{\frac{1}{N}\sum_{j} x_j^{2} + \epsilon}
+\mathrm{rms}(x) = \sqrt{\frac{1}{N}\sum_{j} x_j^{2} + \epsilon}
 \qquad\qquad
-y_i = \frac{x_i}{\operatorname{rms}(x)}\, w_i
+y_i = \frac{x_i}{\mathrm{rms}(x)}\, w_i
 $$
 
 There's no mean-subtraction and no bias like in LayerNorm — it's just a rescale.
@@ -87,14 +87,14 @@ kernel inside a tight tolerance against the reference. Cheap insurance.
 float per row, nothing traffic-wise) and the backward reads it straight back, so
 the reduction never gets recomputed.
 
-**The weight gradient avoids atomics.** Writing $\hat{x}_i = x_i\,\operatorname{rstd}$
-for the normalized activation and $\operatorname{dyw}_i = dy_i\, w_i$ for the
+**The weight gradient avoids atomics.** Writing $\hat{x}_i = x_i\,\mathrm{rstd}$
+for the normalized activation and $\mathrm{dyw}_i = dy_i\, w_i$ for the
 upstream grad folded with the gain, the two gradients are:
 
 $$
-dx_i = \operatorname{rstd}\left(\operatorname{dyw}_i - \hat{x}_i \cdot \frac{1}{N}\sum_{j} \operatorname{dyw}_j\,\hat{x}_j\right)
+dx_i = \mathrm{rstd}\left(\mathrm{dyw}_i - \hat{x}_i \cdot \frac{1}{N}\sum_{j} \mathrm{dyw}_j\,\hat{x}_j\right)
 \qquad\qquad
-dw_i = \sum_{\text{rows}} dy_i\,\hat{x}_i
+dw_i = \sum_{\mathrm{rows}} dy_i\,\hat{x}_i
 $$
 
 `dx` is per-row, so it parallelizes for free. `dw` is the annoying one — it sums a
