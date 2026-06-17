@@ -1,187 +1,196 @@
-# fusedkernel — Fused Triton RMSNorm (forward + backward)
+# fusedkernel — a fused Triton RMSNorm
 
-A single-file, autotuned [Triton](https://github.com/openai/triton) kernel for
-**RMSNorm** (Zhang & Sennrich, 2019) — the normalization used by Llama, Qwen,
-Mistral, and Gemma — with both the forward and backward passes wired into
-PyTorch autograd. Validated for correctness and benchmarked end-to-end on an
-**NVIDIA H100 80GB SXM (HBM3)**.
+This is a from-scratch [Triton](https://github.com/openai/triton) implementation
+of **RMSNorm** — the normalization layer inside Llama, Qwen, Mistral, and Gemma —
+with the forward *and* backward passes fused into single kernels and plugged into
+PyTorch autograd. I wrote it to see how close a hand-rolled kernel could get to
+the memory-bandwidth ceiling of an H100, and then actually ran it on one to find
+out.
 
-**Headline (H100, forward, M=4096, N=8192):**
+Short version: on an H100 it's about **6× faster** than the stock PyTorch
+spelling and pushes roughly **45% of the card's peak HBM bandwidth**. More on what
+that does and doesn't mean below.
 
-| dtype | fused latency | speedup vs eager PyTorch | effective bandwidth | % of H100 peak (3.35 TB/s) |
-|-------|--------------:|-------------------------:|--------------------:|---------------------------:|
-| bf16  | 0.0893 ms     | **5.96×**                | 1503.4 GB/s         | 44.9%                      |
-| fp16  | 0.0970 ms     | **5.48×**                | 1384.1 GB/s         | 41.3%                      |
+```
+forward, M=4096, N=8192, NVIDIA H100 80GB SXM
+
+bf16   0.0893 ms   ██████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  44.9% of 3.35 TB/s   (5.96× vs eager)
+fp16   0.0970 ms   █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  41.3% of 3.35 TB/s   (5.48× vs eager)
+                   └──────────── filled = bandwidth used, empty = headroom ────────────┘
+```
 
 ---
 
-## 1. What we are trying to do
+## The problem: RMSNorm is all memory, no math
 
-RMSNorm normalizes a row vector `x ∈ ℝ^N` by its root-mean-square and rescales it
-by a learned gain `w ∈ ℝ^N`:
+RMSNorm takes a row `x ∈ ℝ^N`, divides it by its root-mean-square, and scales by a
+learned gain `w`:
 
 ```
 rms(x) = sqrt( mean_j(x_j²) + eps )
 y_i    = (x_i / rms(x)) · w_i
 ```
 
-Unlike LayerNorm there is **no mean-subtraction and no bias** — it is purely a
-rescaling by the root-mean-square. The arithmetic is trivial: a couple of
-multiplies and a single `rsqrt` per element. That makes RMSNorm a textbook
-**memory-bound** operation. The cost is dominated entirely by moving `x` and `y`
-through HBM, not by the math.
+There's no mean-subtraction and no bias like in LayerNorm — it's just a rescale.
+So per element you're doing a couple of multiplies and one `rsqrt`. That's
+nothing. The expensive part is moving `x` and `y` across HBM, which means the
+whole game is: **touch memory as few times as possible.**
 
-The eager PyTorch spelling makes this worse than it needs to be:
+Here's where stock PyTorch falls down. The obvious spelling
 
 ```python
-variance = x.pow(2).mean(dim=-1, keepdim=True)   # square → mean
-x = x * torch.rsqrt(variance + eps)              # add → rsqrt → mul
-return weight * x                                # mul
+variance = x.pow(2).mean(dim=-1, keepdim=True)
+x = x * torch.rsqrt(variance + eps)
+return weight * x
 ```
 
-Each step launches a **separate CUDA kernel**, and each kernel round-trips the
-full activation through memory. For a memory-bound op, the number of HBM
-round-trips *is* the runtime.
+looks like one line of math but compiles to a *chain of separate CUDA kernels*,
+and every link in that chain reads the activation back out of HBM and writes it
+again. For a memory-bound op, those round-trips basically *are* the runtime:
 
-**The goal:** fuse the entire sequence into one kernel so each row is **read once
-and written once**, and verify — on real hardware — both that it is numerically
-correct and that it approaches the device's memory-bandwidth ceiling.
-
-## 2. How we did it
-
-The kernel lives in [`kernels/rmsnorm.py`](kernels/rmsnorm.py). The design, point
-by point:
-
-### One Triton program per row
-The entire row fits in SRAM/registers, so the forward pass reads `x` exactly once
-and writes `y` exactly once — there is no second read. `BLOCK_SIZE` is fixed per
-call to `next_power_of_2(N)` so a single tile spans a full row; the tail is masked
-when `N` is not a power of two. We guard `N ≤ 65536` so a too-wide row fails loud
-rather than silently corrupting (a row that big would need a multi-pass variant).
-
-### fp32 reductions regardless of storage dtype
-Every reduction accumulates in fp32 even when `x` is fp16/bf16. The sum of `N`
-squares is exactly where low precision bites, so we **upcast on load** and only
-**downcast at the store boundary**. This is what lets the kernel hold a tight
-tolerance against an fp32 oracle (see §3).
-
-### `rstd` is cached for the backward pass
-The forward pass saves `rstd = 1/rms` (one fp32 per row — negligible traffic) and
-hands it to the backward pass, so the reduction is **never recomputed** during the
-gradient.
-
-### Lock-free backward `dw` — no atomics
-The gradients (all reductions over the `N` columns of a row):
-
-```
-xhat_i = x_i · rstd                 (normalized activation)
-dyw_i  = dy_i · w_i                 (upstream grad folded with the gain)
-
-dx_i   = rstd · ( dyw_i − xhat_i · mean_j(dyw_j · xhat_j) )
-dw_i   = Σ_over_rows( dy_i · xhat_i )         (a reduction across the M axis)
+```mermaid
+flowchart LR
+    subgraph eager["Eager PyTorch — each box is its own kernel launch"]
+        direction LR
+        ex[("x")] --> sq["x²"] --> mn["mean"] --> rs["rsqrt"] --> mw["· w"] --> ey[("y")]
+    end
+    subgraph fused["This kernel — one launch"]
+        direction LR
+        fx[("x")] --> k[["read · square · mean · rsqrt · scale"]] --> fy[("y")]
+    end
 ```
 
-`dx` is a per-row reduction — embarrassingly parallel, one program per row. `dw`
-is the awkward one: it sums one contribution per row into a single `[N]` vector.
-Instead of atomics, **each program gets its own private `[N]` accumulator** and
-uses a **grid-stride loop** to fold many rows into it with zero cross-program
-contention. A final small `torch.sum` reduces the `[n_programs, N]` partial buffer
-to `[N]`. The program count is capped at the device SM count, so the partial
-buffer stays small while still saturating the machine.
+In the top row, every arrow between boxes is a trip out to HBM and back. In the
+bottom row there's one read and one write, full stop. Collapsing those trips is
+the entire speedup — and you can predict it: kill ~6 round-trips, get ~6×.
 
-### Autotuned per-`N`
-`@triton.autotune(key=["N"])` sweeps `num_warps ∈ {1,2,4,8,16,32}` and
-`num_stages ∈ {1,2,4}`. For a memory-bound kernel, `num_warps` (how many threads
-cooperate to stream one row) and `num_stages` (software pipelining of the global
-loads) are the knobs that actually move the needle. `BLOCK_SIZE` is deliberately
-*not* autotuned — correctness requires `BLOCK_SIZE ≥ N`, so it is pinned.
+## How the kernel works
 
-### PyTorch integration
-A `torch.autograd.Function` flattens any `[..., N]` input to `[M, N]` (RMSNorm
-always acts on the last dim, so `[B, S, H]` and `[B·S, H]` are the same problem),
-runs the kernels, and reshapes back. `rmsnorm(x, w, eps)` is a drop-in,
-fully differentiable op.
+Everything is in [`kernels/rmsnorm.py`](kernels/rmsnorm.py), one file. The pieces
+that matter:
 
-## 3. How we verified correctness
+**One program per row.** Each Triton program grabs a single row and keeps the
+whole thing in registers/SRAM, so the forward pass reads `x` once and writes `y`
+once — there's never a second pass over the data. The tile width is just
+`next_power_of_2(N)` so one tile covers a row, with the tail masked off when `N`
+isn't a power of two. I cap `N` at 65536 so a pathologically wide row fails with a
+clear error instead of silently overflowing the tile.
 
-Tests live in [`tests/test_rmsnorm.py`](tests/test_rmsnorm.py). The methodology is
-deliberate:
+**Reductions always run in fp32.** Even when the tensor is fp16 or bf16, I upcast
+on load and only round back down when storing `y`. Summing `N` squares is exactly
+the spot where low precision hurts, and doing the sum in fp32 is what keeps the
+kernel inside a tight tolerance against the reference. Cheap insurance.
 
-- **We do *not* bit-match a same-dtype eager implementation.** Two correct fp16
-  kernels legitimately differ in their last bit depending on rounding order.
-  Instead we compare against an **fp32 oracle** — the mathematically true value,
-  computed end-to-end in fp32 and rounded to the test dtype only at the very end —
-  and assert closeness with dtype-appropriate tolerances (tighter for fp16, looser
-  for bf16). This is the honest way to make a precision claim: *"within X of the
-  true value,"* not *"identical to one particular spelling."*
-- **Backward is checked the same way:** analytic Triton gradients vs autograd
-  gradients of the fp32 oracle.
-- **Coverage:** forward across `{2048, 4096, 8192}` hidden dims ×
-  `{512, 1024, 2048, 4096}` rows × `{fp16, bf16}`, plus non-power-of-two and 3D
-  shapes, and analytic-vs-autograd gradient checks.
+**The backward reuses the forward's work.** Forward stashes `rstd = 1/rms` (one
+float per row, nothing traffic-wise) and the backward reads it straight back, so
+the reduction never gets recomputed.
 
-**Result on H100:** `40 passed` (Slurm job `604545`, node `trig0006`, 00:01:57,
-exit `0:0`).
+**The weight gradient avoids atomics.** The two gradients look like this:
 
-## 4. How we benchmarked
+```
+xhat = x · rstd                       # the normalized activation
+dyw  = dy · w                         # upstream grad, folded with the gain
 
-The sweep lives in [`bench/benchmark.py`](bench/benchmark.py). Because RMSNorm is
-memory-bound, the headline metric is **not** raw FLOP/s — it is **effective HBM
-bandwidth as a fraction of the device peak**.
+dx   = rstd · ( dyw − xhat · mean_j(dyw_j · xhat_j) )
+dw   = Σ over all rows ( dy · xhat )
+```
 
-- **Timing** uses `triton.testing.do_bench`, which warms up, runs many reps, and
-  returns the median — it handles CUDA stream sync and discards cold launches, so
-  autotuning and one-time compilation never pollute the measurement.
-- **Bytes moved** counts the dominant activation traffic: forward = read `x` +
-  write `y` = `2·M·N·elem_size`; backward = read `x` + read `dy` + write `dx` =
-  `3·M·N·elem_size`. The `O(M+N)` terms (`w`, `rstd`, `dw` partials) are
-  negligible and excluded — that is the honest denominator for "% of peak."
-- **`% of peak`** divides effective bandwidth by the device peak, supplied via
-  `RMSNORM_PEAK_GBPS` (3350 for H100 SXM HBM3; 2039 for A100 80GB). Nothing is
-  hard-coded.
-- **Same shapes as the correctness suite**, so a green test run and the perf
-  numbers describe the exact same kernels.
+`dx` is per-row, so it parallelizes for free. `dw` is the annoying one — it sums a
+contribution from *every* row into one shared `[N]` vector, which is the classic
+"reach for atomics" situation. I didn't. Instead each program keeps its own
+private `[N]` accumulator and walks a chunk of rows with a grid-stride loop, so no
+two programs ever touch the same memory. At the end a small `torch.sum` folds the
+`[n_programs, N]` partials down to `[N]`. Program count is capped at the SM count,
+which keeps that partial buffer tiny.
 
-Output: `bench/results/rmsnorm_benchmark.csv` (columns: `direction, dtype, M, N,
-triton_ms, torch_ms, speedup, gbps, pct_peak`) plus per-dtype latency and
+**Autotuned per `N`.** A decorator sweeps `num_warps ∈ {1,2,4,8,16,32}` and
+`num_stages ∈ {1,2,4}` and caches the winner per hidden size. Those are the two
+knobs that actually matter for a streaming kernel — how many warps gang up on a
+row, and how deep the load pipeline is. The tile size isn't autotuned because
+correctness pins it.
+
+The whole thing is wrapped in a `torch.autograd.Function`, so `rmsnorm(x, w)` is a
+drop-in differentiable op — it flattens any `[..., N]` input down to `[M, N]`
+(RMSNorm only ever touches the last dim) and reshapes back on the way out.
+
+## Checking it's actually correct
+
+Tests are in [`tests/test_rmsnorm.py`](tests/test_rmsnorm.py). One deliberate
+choice here: I don't bit-match against an eager fp16 implementation, because two
+*correct* fp16 kernels can disagree in the last bit just from rounding order.
+Matching one spelling exactly would be testing the wrong thing.
+
+Instead everything is compared against an **fp32 oracle** — the true value worked
+out entirely in fp32 and only rounded to fp16/bf16 at the very end — with
+tolerances set per dtype (tighter for fp16, looser for bf16, since bf16 has fewer
+mantissa bits). The backward is checked the same way: analytic Triton gradients
+against autograd's gradients of that oracle. The honest claim that buys you is
+"within X of the true answer," not "identical to some other code I happened to
+write."
+
+It runs across `{2048, 4096, 8192}` hidden dims × `{512, 1024, 2048, 4096}` rows ×
+`{fp16, bf16}`, plus non-power-of-two and 3D shapes, plus the gradient checks.
+
+On the H100: **40 passed** (Slurm job `604545`, node `trig0006`, 1m57s, exit 0).
+
+## How I benchmarked it
+
+The sweep is [`bench/benchmark.py`](bench/benchmark.py). Since this is
+memory-bound, reporting FLOP/s would be misleading — the number that means
+something is **effective bandwidth as a fraction of what the card can do.**
+
+- Timing goes through `triton.testing.do_bench`, which warms up, runs many reps,
+  takes the median, and throws away the cold launches — so autotuning and
+  first-compile don't leak into the measurement.
+- Bytes moved counts only the activation traffic that the kernel *has* to do:
+  forward is read `x` + write `y` (`2·M·N`), backward is read `x` + read `dy` +
+  write `dx` (`3·M·N`). The `w`/`rstd`/partial-buffer traffic is `O(M+N)` and
+  rounding error next to that, so I leave it out — that's the honest denominator.
+- `% of peak` divides by whatever you pass in `RMSNORM_PEAK_GBPS` (3350 for the
+  H100 SXM, 2039 for an A100). Nothing about the device is hard-coded.
+- Same shapes as the test suite, so the perf numbers describe the exact kernels
+  that just passed correctness.
+
+It drops a CSV (`bench/results/rmsnorm_benchmark.csv`) and per-dtype latency /
 %-of-peak plots.
 
-## 5. Results (NVIDIA H100 80GB SXM, HBM3)
+## Results on an H100
 
-Benchmark Slurm job `604586`, node `trig0024`, runtime 00:01:12, exit `0:0`.
-Peak bandwidth denominator: **3.35 TB/s** (H100 SXM HBM3).
+Run on one NVIDIA H100 80GB SXM (HBM3, 3.35 TB/s). Slurm job `604586`, node
+`trig0024`, 1m12s, exit 0.
 
-**Forward, the largest sweep point (M=4096, N=8192):**
+Forward pass at the biggest shape in the sweep (M=4096, N=8192):
 
-| dtype | fused (`triton_ms`) | eager (`torch_ms`) | speedup | GB/s   | % of peak |
-|-------|--------------------:|-------------------:|--------:|-------:|----------:|
-| bf16  | 0.0893 ms           | 0.5322 ms          | 5.96×   | 1503.4 | 44.9%     |
-| fp16  | 0.0970 ms           | 0.5319 ms          | 5.48×   | 1384.1 | 41.3%     |
+| dtype | fused      | eager      | speedup | GB/s   | % of peak |
+|-------|-----------:|-----------:|--------:|-------:|----------:|
+| bf16  | 0.0893 ms  | 0.5322 ms  | 5.96×   | 1503.4 | 44.9%     |
+| fp16  | 0.0970 ms  | 0.5319 ms  | 5.48×   | 1384.1 | 41.3%     |
 
-(`torch_ms` shown for the headline point is implied by `speedup × triton_ms`; the
-full sweep across all `M × N × dtype × {forward, backward}` is in the generated
-CSV.)
+(The full grid — every `M × N × dtype` for both forward and backward — is in the
+generated CSV; these are the headline rows.)
 
-### What the numbers mean
+A few honest takeaways:
 
-- **The ~6× speedup is the result the design predicts.** Eager RMSNorm is six
-  kernels, each re-streaming the activation through HBM; the fused kernel reads
-  once and writes once. The speedup ≈ the number of HBM round-trips eliminated.
-  The benchmark confirms the fusion does exactly what it was built to do.
-- **Bandwidth is the honest efficiency score.** At ~45% of the H100's 3.35 TB/s
-  ceiling, the kernel is genuinely **streaming-limited** — not launch-bound or
-  compute-bound — which is the right regime for a memory-bound op. It is *not yet
-  saturating the bus*: well-tuned pure-streaming kernels on H100 reach ~70–80% of
-  peak, so there is real, identifiable headroom (tile/vectorization width, the
-  per-row program scheme, `num_warps`/`num_stages` at large `N`).
-- **bf16 edges out fp16** (1503 vs 1384 GB/s) at identical byte counts — a
-  microarchitectural/conversion-path difference, not an algorithmic one.
+The **~6× is exactly what the diagram up top predicts.** Eager is six kernels each
+re-reading the activation; the fused version reads once and writes once. The
+measured speedup lining up with the round-trips you removed is the satisfying part
+— it means the win is structural, not luck.
 
-**Honest bottom line:** correct and shippable, a clean ~6× over eager, ~45% of
-peak bandwidth — a solid, defensible result with a clearly understood path to
-push utilization higher.
+The **~45% of peak is the number I'd actually scrutinize.** Being bandwidth-bound
+at all is good news: it means the kernel isn't stalling on launches or wasting time
+on math, it's genuinely limited by the memory bus, which is the right place to be
+for an op like this. But 45% isn't the ceiling — a really well-tuned streaming
+kernel on H100 lands closer to 70–80%. So there's real headroom left, and I know
+roughly where it lives (vectorization width, the one-program-per-row layout at
+large `N`, the warp/stage choices). That's the next thing I'd chase.
 
-## 6. Usage
+bf16 also edges fp16 (1503 vs 1384 GB/s) at the same byte count — a
+conversion-path quirk, not anything algorithmic.
+
+So: correct, shippable, a clean 6× over eager, and about half the bandwidth budget
+still on the table. I'd rather state that plainly than dress it up.
+
+## Using it
 
 ```python
 import torch
@@ -190,49 +199,38 @@ from kernels import rmsnorm
 x = torch.randn(4096, 8192, device="cuda", dtype=torch.bfloat16)
 w = torch.ones(8192, device="cuda", dtype=torch.bfloat16)
 
-y = rmsnorm(x, w, eps=1e-6)   # differentiable: y.sum().backward() works
+y = rmsnorm(x, w, eps=1e-6)   # differentiable — y.sum().backward() just works
 ```
 
-`kernels.rmsnorm_reference` provides the fp32-oracle reference used by the tests
-(matched to Hugging Face's `LlamaRMSNorm`).
+`kernels.rmsnorm_reference` is the fp32 oracle the tests use (it matches Hugging
+Face's `LlamaRMSNorm`), handy as a baseline.
 
-## 7. Repository layout
+## What's where
 
 ```
-kernels/rmsnorm.py      the fused forward + backward Triton kernel + autograd glue
-tests/test_rmsnorm.py   correctness + gradient tests vs an fp32 oracle
-bench/benchmark.py      latency + effective-bandwidth sweep
+kernels/rmsnorm.py      the fused forward + backward kernel and autograd glue
+tests/test_rmsnorm.py   correctness + gradient tests against the fp32 oracle
+bench/benchmark.py      the latency / bandwidth sweep
 bench/results/          generated CSV + plots
 slurm/                  SLURM scripts for the Trillium H100 cluster
-RUN.md                  generic cloud-GPU (Lambda/RunPod) run guide
-TRILLIUM.md             SciNet Trillium H100 cluster run guide
+RUN.md                  running on a generic cloud GPU (Lambda / RunPod / …)
+TRILLIUM.md             running on SciNet's Trillium H100 cluster
 ```
 
-## 8. Requirements
+## Running it yourself
 
-A single NVIDIA GPU (A100 80GB or H100), CUDA 12.x, Python 3.10+.
+You need a single NVIDIA GPU (A100 80GB or H100), CUDA 12.x, and Python 3.10+.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+pytest -q          # correctness gate — skips cleanly on a CPU-only box
 ```
 
-## 9. Testing
-
-```bash
-pytest -q
-```
-
-The suite skips cleanly on a CPU-only machine (so collection is green
-everywhere) and only *runs* on a CUDA box. The first run is slower while Triton
-autotunes and compiles each `(N, kernel)`; results cache under `.triton/`.
-
-## 10. Running on a GPU
-
-- **Generic cloud GPU** (Lambda / RunPod / etc.): see [`RUN.md`](RUN.md).
-- **Trillium (SciNet H100 cluster):** see [`TRILLIUM.md`](TRILLIUM.md) — it handles
-  the no-internet compute nodes, read-only `$HOME`, SLURM scripts, and the H100's
-  3.35 TB/s bandwidth denominator.
+The first `pytest` run is slow while Triton autotunes and compiles each shape;
+after that it caches under `.triton/`. For the full cluster walkthroughs see
+[`RUN.md`](RUN.md) (generic cloud GPU) or [`TRILLIUM.md`](TRILLIUM.md) (Trillium,
+which deals with the no-internet compute nodes and read-only `$HOME`).
 
 ## License
 
