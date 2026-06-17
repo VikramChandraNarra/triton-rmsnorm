@@ -12,24 +12,25 @@ spelling and pushes roughly **45% of the card's peak HBM bandwidth**. More on wh
 that does and doesn't mean below.
 
 ```
-forward, M=4096, N=8192, NVIDIA H100 80GB SXM
+forward · M=4096 · N=8192 · H100 80GB SXM (HBM3, 3.35 TB/s peak)
 
-bf16   0.0893 ms   ██████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  44.9% of 3.35 TB/s   (5.96× vs eager)
-fp16   0.0970 ms   █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  41.3% of 3.35 TB/s   (5.48× vs eager)
-                   └──────────── filled = bandwidth used, empty = headroom ────────────┘
+bf16   ██████████████████░░░░░░░░░░░░░░░░░░░░░░   44.9% peak · 5.96x
+fp16   █████████████████░░░░░░░░░░░░░░░░░░░░░░░   41.3% peak · 5.48x
+       └──────── filled = bandwidth used · empty = headroom ────────┘
 ```
 
 ---
 
 ## The problem: RMSNorm is all memory, no math
 
-RMSNorm takes a row `x ∈ ℝ^N`, divides it by its root-mean-square, and scales by a
-learned gain `w`:
+RMSNorm takes a row $x \in \mathbb{R}^{N}$, divides it by its root-mean-square,
+and scales by a learned gain $w$:
 
-```
-rms(x) = sqrt( mean_j(x_j²) + eps )
-y_i    = (x_i / rms(x)) · w_i
-```
+$$
+\operatorname{rms}(x) = \sqrt{\frac{1}{N}\sum_{j} x_j^{2} + \epsilon}
+\qquad\qquad
+y_i = \frac{x_i}{\operatorname{rms}(x)}\, w_i
+$$
 
 There's no mean-subtraction and no bias like in LayerNorm — it's just a rescale.
 So per element you're doing a couple of multiplies and one `rsqrt`. That's
@@ -58,11 +59,12 @@ flowchart LR
         direction LR
         fx[("x")] --> k[["read · square · mean · rsqrt · scale"]] --> fy[("y")]
     end
+    ey ~~~ fx
 ```
 
-In the top row, every arrow between boxes is a trip out to HBM and back. In the
-bottom row there's one read and one write, full stop. Collapsing those trips is
-the entire speedup — and you can predict it: kill ~6 round-trips, get ~6×.
+In the **eager** path, every arrow between boxes is a trip out to HBM and back.
+The **fused** path does one read and one write, full stop. Collapsing those trips
+is the entire speedup — and you can predict it: kill ~6 round-trips, get ~6×.
 
 ## How the kernel works
 
@@ -85,15 +87,15 @@ kernel inside a tight tolerance against the reference. Cheap insurance.
 float per row, nothing traffic-wise) and the backward reads it straight back, so
 the reduction never gets recomputed.
 
-**The weight gradient avoids atomics.** The two gradients look like this:
+**The weight gradient avoids atomics.** Writing $\hat{x}_i = x_i\,\operatorname{rstd}$
+for the normalized activation and $\operatorname{dyw}_i = dy_i\, w_i$ for the
+upstream grad folded with the gain, the two gradients are:
 
-```
-xhat = x · rstd                       # the normalized activation
-dyw  = dy · w                         # upstream grad, folded with the gain
-
-dx   = rstd · ( dyw − xhat · mean_j(dyw_j · xhat_j) )
-dw   = Σ over all rows ( dy · xhat )
-```
+$$
+dx_i = \operatorname{rstd}\left(\operatorname{dyw}_i - \hat{x}_i \cdot \frac{1}{N}\sum_{j} \operatorname{dyw}_j\,\hat{x}_j\right)
+\qquad\qquad
+dw_i = \sum_{\text{rows}} dy_i\,\hat{x}_i
+$$
 
 `dx` is per-row, so it parallelizes for free. `dw` is the annoying one — it sums a
 contribution from *every* row into one shared `[N]` vector, which is the classic
