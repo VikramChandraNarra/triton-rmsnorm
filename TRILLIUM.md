@@ -66,8 +66,7 @@ perf numbers until this is green.**
 ```bash
 sbatch slurm/benchmark.slurm     # reports bandwidth as % of the H100's 3.35 TB/s
 ```
-(`bench/benchmark.py` is added once correctness is confirmed; the SLURM script
-is already staged.)
+This writes `bench/results/rmsnorm_benchmark.csv`.
 
 ---
 

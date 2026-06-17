@@ -89,10 +89,10 @@ def _rmsnorm_fwd_kernel(
     x = tl.load(X + cols, mask=mask, other=0.0).to(tl.float32)
 
     # mean of squares -> rms -> reciprocal. Dividing the sum by N (a python int
-    # promoted to fp32) keeps this in fp32. tl.math.rsqrt is the single
+    # promoted to fp32) keeps this in fp32. tl.rsqrt is the single
     # transcendental in the whole forward pass.
     mean_sq = tl.sum(x * x, axis=0) / N
-    rstd = tl.math.rsqrt(mean_sq + eps)
+    rstd = tl.rsqrt(mean_sq + eps)
 
     # Stash rstd for the backward pass (one fp32 per row -- negligible traffic).
     tl.store(Rstd + row, rstd)
@@ -152,7 +152,7 @@ def _rmsnorm_bwd_kernel(
     # coalesced access and let one warm `w` load amortize across the chunk.
     row_start = pid * rows_per_prog
     row_end = tl.minimum(row_start + rows_per_prog, M)
-    for row in range(row_start, row_end):
+    for row in tl.range(row_start, row_end):
         off = row * stride_m + cols
         x = tl.load(X + off, mask=mask, other=0.0).to(tl.float32)
         dy = tl.load(DY + off, mask=mask, other=0.0).to(tl.float32)

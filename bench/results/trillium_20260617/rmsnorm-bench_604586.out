@@ -1,0 +1,63 @@
+The following modules were not unloaded:
+  (Use "module --force purge" to unload all):
+
+  1) gentoo/2023
+>> Node: trig0024
+NVIDIA H100 80GB HBM3, 81559 MiB, 580.159.04
+>> Environment preflight
+torch   : 2.12.0
+triton  : 3.6.0
+device  : NVIDIA H100 80GB HBM3
+>> Running benchmark sweep -> bench/results/
+device: NVIDIA H100 80GB HBM3
+torch : 2.12.0
+ float16 M=512   N=2048  fwd=0.0685 ms speedup=0.978x bwd=0.2898 ms
+ float16 M=1024  N=4096  fwd=0.0644 ms speedup=1.245x bwd=0.2862 ms
+ float16 M=2048  N=4096  fwd=0.0630 ms speedup=2.456x bwd=0.2743 ms
+ float16 M=4096  N=8192  fwd=0.0970 ms speedup=5.484x bwd=0.2918 ms
+bfloat16 M=512   N=2048  fwd=0.0661 ms speedup=0.976x bwd=0.2832 ms
+bfloat16 M=1024  N=4096  fwd=0.0658 ms speedup=1.209x bwd=0.2809 ms
+bfloat16 M=2048  N=4096  fwd=0.0599 ms speedup=2.592x bwd=0.2752 ms
+bfloat16 M=4096  N=8192  fwd=0.0893 ms speedup=5.960x bwd=0.2815 ms
+wrote bench/results/rmsnorm_benchmark.csv
+>> Done. CSV is under bench/results/ (copy it back to inspect).
+
+scontrol show job 604586
+JobId=604586 JobName=rmsnorm-bench
+   UserId=aneela(3158521) GroupId=aneela(3158521) MCS_label=N/A
+   Priority=1345337 Nice=0 Account=def-mponce-ac QOS=normal
+   JobState=COMPLETING Reason=None Dependency=(null)
+   Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0
+   RunTime=00:01:12 TimeLimit=01:00:00 TimeMin=N/A
+   SubmitTime=2026-06-17T16:34:02 EligibleTime=2026-06-17T16:34:02
+   AccrueTime=2026-06-17T16:34:02
+   StartTime=2026-06-17T16:34:03 EndTime=2026-06-17T16:35:15 Deadline=N/A
+   SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-06-17T16:34:03 Scheduler=Main
+   Partition=compute AllocNode:Sid=trig-login01:4136170
+   ReqNodeList=(null) ExcNodeList=(null)
+   NodeList=trig0024
+   BatchHost=trig0024
+   NumNodes=1 NumCPUs=24 NumTasks=1 CPUs/Task=24 ReqB:S:C:T=0:0:*:*
+   ReqTRES=cpu=24,mem=192500M,node=1,billing=1,gres/gpu=1
+   AllocTRES=cpu=24,mem=192500M,node=1,billing=1,gres/gpu=1
+   Socks/Node=* NtasksPerN:B:S:C=1:0:*:* CoreSpec=*
+   MinCPUsNode=24 MinMemoryNode=192500M MinTmpDiskNode=0
+   Features=(null) DelayBoot=00:00:00
+   OverSubscribe=OK Contiguous=0 Licenses=(null) LicensesAlloc=(null) Network=(null)
+   Command=/scratch/aneela/triton-rmsnorm_20260617T200445Z/slurm/benchmark.slurm
+   SubmitLine=SBATCH --comment /opt/slurm/bin/sbatch --export=NONE --get-user-env --hold --parsable --account=def-mponce-ac --partition=compute --qos=normal --nodes=1 --gpus-per-node=1 --ntasks-per-node=1 --cpus-per-task=24 --time=01:00:00 --job-name=rmsnorm-bench --chdir=/scratch/aneela/triton-rmsnorm_20260617T200445Z --output=/scratch/aneela/triton-rmsnorm_20260617T200445Z/%x_%j.out slurm/benchmark.slurm --export=NONE --get-user-env --hold --parsable --account=def-mponce-ac --partition=compute --qos=normal --nodes=1 --gpus-per-node=1 --ntasks-per-node=1 --cpus-per-task=24 --time=01:00:00 --job-name=rmsnorm-bench --chdir=/scratch/aneela/triton-rmsnorm_20260617T200445Z --output=/scratch/aneela/triton-rmsnorm_20260617T200445Z/%x_%j.out slurm/benchmark.slurm
+   WorkDir=/scratch/aneela/triton-rmsnorm_20260617T200445Z
+   Comment=/opt/slurm/bin/sbatch --export=NONE --get-user-env --hold --parsable --account=def-mponce-ac --partition=compute --qos=normal --nodes=1 --gpus-per-node=1 --ntasks-per-node=1 --cpus-per-task=24 --time=01:00:00 --job-name=rmsnorm-bench --chdir=/scratch/aneela/triton-rmsnorm_20260617T200445Z --output=/scratch/aneela/triton-rmsnorm_20260617T200445Z/%x_%j.out slurm/benchmark.slurm
+   StdErr=
+   StdIn=/dev/null
+   StdOut=/scratch/aneela/triton-rmsnorm_20260617T200445Z/rmsnorm-bench_604586.out
+   TresPerNode=gres/gpu:1
+   TresPerTask=cpu=24
+   MailUser=aneela@scinet.local MailType=FAIL
+
+sacct -j 604586
+JobID           JobName    Account    Elapsed  MaxVMSize     MaxRSS  SystemCPU    UserCPU ExitCode
+------------ ---------- ---------- ---------- ---------- ---------- ---------- ---------- --------
+604586       rmsnorm-b+ def-mponc+   00:01:13                         00:00:00   00:00:00      0:0
+604586.batch      batch def-mponc+   00:01:13                         00:00:00   00:00:00      0:0
+604586.exte+     extern def-mponc+   00:01:13                         00:00:00   00:00:00      0:0

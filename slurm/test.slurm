@@ -43,6 +43,19 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 
 # --- run from the repo root so `import kernels` resolves --------------------
 cd "$SLURM_SUBMIT_DIR"
+
+echo ">> Environment preflight"
+python - <<'PY'
+import torch
+import triton
+
+print("torch   :", torch.__version__)
+print("triton  :", triton.__version__)
+if not torch.cuda.is_available():
+    raise SystemExit("CUDA is not available inside the SLURM job.")
+print("device  :", torch.cuda.get_device_name(0))
+PY
+
 echo ">> Running pytest"
 pytest -q
 echo ">> pytest exit code: $?"
