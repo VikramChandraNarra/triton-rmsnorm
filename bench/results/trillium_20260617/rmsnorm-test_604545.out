@@ -1,0 +1,53 @@
+The following modules were not unloaded:
+  (Use "module --force purge" to unload all):
+
+  1) gentoo/2023
+>> Node: trig0006
+NVIDIA H100 80GB HBM3, 81559 MiB, 580.159.04
+>> Environment preflight
+torch   : 2.12.0
+triton  : 3.6.0
+device  : NVIDIA H100 80GB HBM3
+>> Running pytest
+........................................                                 [100%]
+>> pytest exit code: 0
+
+scontrol show job 604545
+JobId=604545 JobName=rmsnorm-test
+   UserId=aneela(3158521) GroupId=aneela(3158521) MCS_label=N/A
+   Priority=1345337 Nice=0 Account=def-mponce-ac QOS=normal
+   JobState=COMPLETING Reason=None Dependency=(null)
+   Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0
+   RunTime=00:01:57 TimeLimit=00:30:00 TimeMin=N/A
+   SubmitTime=2026-06-17T16:08:44 EligibleTime=2026-06-17T16:08:46
+   AccrueTime=2026-06-17T16:08:46
+   StartTime=2026-06-17T16:08:46 EndTime=2026-06-17T16:10:43 Deadline=N/A
+   SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-06-17T16:08:46 Scheduler=Main
+   Partition=compute AllocNode:Sid=trig-login01:3949650
+   ReqNodeList=(null) ExcNodeList=(null)
+   NodeList=trig0006
+   BatchHost=trig0006
+   NumNodes=1 NumCPUs=24 NumTasks=1 CPUs/Task=24 ReqB:S:C:T=0:0:*:*
+   ReqTRES=cpu=24,mem=192500M,node=1,billing=1,gres/gpu=1
+   AllocTRES=cpu=24,mem=192500M,node=1,billing=1,gres/gpu=1
+   Socks/Node=* NtasksPerN:B:S:C=1:0:*:* CoreSpec=*
+   MinCPUsNode=24 MinMemoryNode=192500M MinTmpDiskNode=0
+   Features=(null) DelayBoot=00:00:00
+   OverSubscribe=OK Contiguous=0 Licenses=(null) LicensesAlloc=(null) Network=(null)
+   Command=/scratch/aneela/triton-rmsnorm_20260617T200445Z/slurm/test.slurm
+   SubmitLine=SBATCH --comment /opt/slurm/bin/sbatch --export=NONE --get-user-env --hold --parsable --account=def-mponce-ac --partition=compute --qos=normal --nodes=1 --gpus-per-node=1 --ntasks-per-node=1 --cpus-per-task=24 --time=00:30:00 --job-name=rmsnorm-test --chdir=/scratch/aneela/triton-rmsnorm_20260617T200445Z --output=/scratch/aneela/triton-rmsnorm_20260617T200445Z/%x_%j.out slurm/test.slurm --export=NONE --get-user-env --hold --parsable --account=def-mponce-ac --partition=compute --qos=normal --nodes=1 --gpus-per-node=1 --ntasks-per-node=1 --cpus-per-task=24 --time=00:30:00 --job-name=rmsnorm-test --chdir=/scratch/aneela/triton-rmsnorm_20260617T200445Z --output=/scratch/aneela/triton-rmsnorm_20260617T200445Z/%x_%j.out slurm/test.slurm
+   WorkDir=/scratch/aneela/triton-rmsnorm_20260617T200445Z
+   Comment=/opt/slurm/bin/sbatch --export=NONE --get-user-env --hold --parsable --account=def-mponce-ac --partition=compute --qos=normal --nodes=1 --gpus-per-node=1 --ntasks-per-node=1 --cpus-per-task=24 --time=00:30:00 --job-name=rmsnorm-test --chdir=/scratch/aneela/triton-rmsnorm_20260617T200445Z --output=/scratch/aneela/triton-rmsnorm_20260617T200445Z/%x_%j.out slurm/test.slurm
+   StdErr=
+   StdIn=/dev/null
+   StdOut=/scratch/aneela/triton-rmsnorm_20260617T200445Z/rmsnorm-test_604545.out
+   TresPerNode=gres/gpu:1
+   TresPerTask=cpu=24
+   MailUser=aneela@scinet.local MailType=FAIL
+
+sacct -j 604545
+JobID           JobName    Account    Elapsed  MaxVMSize     MaxRSS  SystemCPU    UserCPU ExitCode
+------------ ---------- ---------- ---------- ---------- ---------- ---------- ---------- --------
+604545       rmsnorm-t+ def-mponc+   00:01:57                         00:00:00   00:00:00      0:0
+604545.batch      batch def-mponc+   00:01:57                         00:00:00   00:00:00      0:0
+604545.exte+     extern def-mponc+   00:01:57                         00:00:00   00:00:00      0:0

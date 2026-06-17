@@ -45,7 +45,7 @@ y = rmsnorm(x, w, eps=1e-6)   # differentiable: y.sum().backward() works
 ```
 kernels/rmsnorm.py     the fused forward + backward Triton kernel
 tests/test_rmsnorm.py  correctness + gradient tests vs an fp32 oracle
-bench/                 benchmark outputs (results/)
+bench/                 benchmark script + regenerated outputs (results/)
 slurm/                 SLURM scripts for the Trillium H100 cluster
 ```
 

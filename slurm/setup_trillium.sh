@@ -29,7 +29,11 @@ module load cuda/12.6
 
 echo ">> Creating virtualenv at $VENV"
 # --no-download builds the venv from the cluster's local copies, no internet.
-virtualenv --no-download "$VENV"
+if [ -d "$VENV" ]; then
+    echo ">> Reusing existing virtualenv"
+else
+    virtualenv --no-download "$VENV"
+fi
 source "$VENV/bin/activate"
 
 echo ">> Upgrading pip from the wheelhouse"
@@ -50,12 +54,10 @@ pip install --no-index triton || echo "   (triton not a standalone wheel; using 
 echo ">> Sanity check: versions + GPU visibility from the login node"
 python - <<'PY'
 import torch
+import triton
+
 print("torch   :", torch.__version__)
-try:
-    import triton
-    print("triton  :", triton.__version__)
-except Exception as e:
-    print("triton  : IMPORT FAILED ->", e)
+print("triton  :", triton.__version__)
 print("cuda ok :", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("device  :", torch.cuda.get_device_name(0))

@@ -5,8 +5,7 @@
 #     cd $SCRATCH/triton-rmsnorm
 #     sbatch slurm/benchmark.slurm
 #
-# NOTE: bench/benchmark.py is added AFTER the correctness gate passes. This
-# script is staged and ready so there is zero scramble once tests are green.
+# Run this only after slurm/test.slurm is green.
 # Single GPU is the right choice -- the kernel is per-row, so one H100 gives a
 # clean, contention-free measurement.
 # =============================================================================
@@ -42,6 +41,19 @@ echo ">> Node: $(hostname)"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 
 cd "$SLURM_SUBMIT_DIR"
+
+echo ">> Environment preflight"
+python - <<'PY'
+import torch
+import triton
+
+print("torch   :", torch.__version__)
+print("triton  :", triton.__version__)
+if not torch.cuda.is_available():
+    raise SystemExit("CUDA is not available inside the SLURM job.")
+print("device  :", torch.cuda.get_device_name(0))
+PY
+
 echo ">> Running benchmark sweep -> bench/results/"
 python bench/benchmark.py --out bench/results
-echo ">> Done. CSV + plots are under bench/results/ (copy them back to inspect)."
+echo ">> Done. CSV is under bench/results/ (copy it back to inspect)."
